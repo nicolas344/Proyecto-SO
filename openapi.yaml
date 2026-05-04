@@ -1,0 +1,1032 @@
+openapi: 3.0.3
+info:
+  title: Ejecutor de Lotes - API
+  description: |
+    API del sistema **Ejecutor de Lotes** para la práctica de Sistemas Operativos (ST0257).
+
+    Esta API documenta las operaciones disponibles a través del controlador `ctrllt` (pasarela)
+    que enruta las peticiones a los servicios especializados: `gesfich`, `gesprog` y `ejecutor`.
+
+    > **Nota importante:** La comunicación real entre componentes se realiza mediante
+    > **tuberías nombradas (named pipes)** con mensajes en formato JSON, no por HTTP.
+    > Esta especificación OpenAPI documenta el contrato de la API de forma estandarizada
+    > para facilitar la comprensión y la generación de documentación visual.
+
+    ## Componentes del Sistema
+
+    - **cliente**: Realiza peticiones al sistema (CRUD de programas, ficheros y procesos).
+    - **ctrllt**: Pasarela que recibe peticiones y las dirige al servicio correspondiente.
+    - **gesfich**: Gestor de ficheros (CRUD de ficheros en `aralmac`).
+    - **gesprog**: Gestor de programas (CRUD de programas en `aralmac`).
+    - **ejecutor**: Ejecutor de procesos de lotes.
+    - **aralmac**: Área de almacenamiento compartida.
+
+    ## Identificadores
+
+    - **Ficheros:** `f-XXXX` (ej: `f-0001`)
+    - **Programas:** `p-XXXX` (ej: `p-0001`)
+    - **Procesos:** `proc-XXXX` (ej: `proc-0001`)
+  version: 1.0.0
+  contact:
+    name: Equipo de Desarrollo - Sistemas Operativos
+  license:
+    name: Académico
+
+servers:
+  - url: pipe://ctrllt
+    description: |
+      Servidor virtual representando la conexión a través de tuberías nombradas hacia `ctrllt`.
+
+tags:
+  - name: gesfich
+    description: |
+      Operaciones del **Gestor de Ficheros**.
+      Crea, actualiza, borra y lee ficheros almacenados en `aralmac`.
+  - name: gesprog
+    description: |
+      Operaciones del **Gestor de Programas**.
+      Guarda, actualiza, borra y muestra programas almacenados en `aralmac`.
+  - name: ejecutor
+    description: |
+      Operaciones del **Ejecutor**.
+      Ejecuta procesos de lotes a partir de programas y ficheros registrados.
+  - name: control
+    description: |
+      Operaciones de **control de servicios** (suspender, reasumir, terminar).
+
+paths:
+
+  # =========================================================
+  # gesfich - Gestor de Ficheros
+  # =========================================================
+
+  /gesfich/ficheros:
+    post:
+      tags: [gesfich]
+      summary: Crear fichero
+      description: |
+        Crea un fichero vacío en el área de almacenamiento `aralmac`.
+        Retorna un identificador único de fichero con formato `f-XXXX`.
+      operationId: crearFichero
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestCrearFichero'
+            examples:
+              ejemplo:
+                value:
+                  request_id: "550e8400-e29b-41d4-a716-446655440000"
+                  operation: "crear_fichero"
+                  service: "gesfich"
+                  params: {}
+                  timestamp: "2026-05-05T10:30:00Z"
+      responses:
+        '200':
+          description: Fichero creado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseCrearFichero'
+              examples:
+                exitoso:
+                  value:
+                    request_id: "550e8400-e29b-41d4-a716-446655440000"
+                    status: "success"
+                    data:
+                      id_fichero: "f-0001"
+                    error: null
+                    timestamp: "2026-05-05T10:30:01Z"
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+    get:
+      tags: [gesfich]
+      summary: Listar ficheros
+      description: Retorna la información de todos los ficheros registrados en `aralmac`.
+      operationId: listarFicheros
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestListarFicheros'
+      responses:
+        '200':
+          description: Lista de ficheros obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseListarFicheros'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /gesfich/ficheros/{id_fichero}:
+    get:
+      tags: [gesfich]
+      summary: Leer fichero
+      description: Retorna el contenido de un fichero específico por su identificador.
+      operationId: leerFichero
+      parameters:
+        - name: id_fichero
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^f-\d{4}$'
+            example: 'f-0001'
+      responses:
+        '200':
+          description: Fichero leído exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseLeerFichero'
+        '404':
+          description: Fichero no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseError'
+              examples:
+                no_encontrado:
+                  value:
+                    request_id: "uuid-v4"
+                    status: "error"
+                    data: null
+                    error:
+                      code: "FILE_NOT_FOUND"
+                      message: "El fichero con id 'f-9999' no existe en aralmac"
+                    timestamp: "2026-05-05T10:30:01Z"
+
+    put:
+      tags: [gesfich]
+      summary: Actualizar fichero
+      description: |
+        Copia el contenido de un fichero del sistema dentro del fichero registrado en `aralmac`.
+      operationId: actualizarFichero
+      parameters:
+        - name: id_fichero
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^f-\d{4}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestActualizarFichero'
+      responses:
+        '200':
+          description: Fichero actualizado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseActualizarFichero'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+
+    delete:
+      tags: [gesfich]
+      summary: Borrar fichero
+      description: Elimina un fichero del área de almacenamiento `aralmac`.
+      operationId: borrarFichero
+      parameters:
+        - name: id_fichero
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^f-\d{4}$'
+      responses:
+        '200':
+          description: Fichero borrado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseBorrarFichero'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+
+  # =========================================================
+  # gesprog - Gestor de Programas
+  # =========================================================
+
+  /gesprog/programas:
+    post:
+      tags: [gesprog]
+      summary: Guardar programa
+      description: |
+        Registra un nuevo programa (binario o script) en `aralmac` con sus argumentos
+        y variables de ambiente. Retorna un identificador único `p-XXXX`.
+      operationId: guardarPrograma
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestGuardarPrograma'
+            examples:
+              ejemplo:
+                value:
+                  request_id: "550e8400-e29b-41d4-a716-446655440001"
+                  operation: "guardar_programa"
+                  service: "gesprog"
+                  params:
+                    ejecutable: "/usr/bin/wc"
+                    argumentos: ["-l"]
+                    ambiente:
+                      PATH: "/usr/bin:/bin"
+                      LANG: "es_ES.UTF-8"
+                  timestamp: "2026-05-05T10:30:00Z"
+      responses:
+        '200':
+          description: Programa guardado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseGuardarPrograma'
+              examples:
+                exitoso:
+                  value:
+                    request_id: "550e8400-e29b-41d4-a716-446655440001"
+                    status: "success"
+                    data:
+                      id_programa: "p-0001"
+                    error: null
+                    timestamp: "2026-05-05T10:30:01Z"
+        '400':
+          description: Ejecutable inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseError'
+
+    get:
+      tags: [gesprog]
+      summary: Listar programas
+      description: Retorna la información de todos los programas registrados.
+      operationId: listarProgramas
+      responses:
+        '200':
+          description: Lista de programas obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseListarProgramas'
+
+  /gesprog/programas/{id_programa}:
+    get:
+      tags: [gesprog]
+      summary: Leer programa
+      description: Retorna la información de un programa específico.
+      operationId: leerPrograma
+      parameters:
+        - name: id_programa
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^p-\d{4}$'
+            example: 'p-0001'
+      responses:
+        '200':
+          description: Programa leído exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseLeerPrograma'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+
+    put:
+      tags: [gesprog]
+      summary: Actualizar programa
+      description: Actualiza la información de un programa registrado.
+      operationId: actualizarPrograma
+      parameters:
+        - name: id_programa
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^p-\d{4}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestActualizarPrograma'
+      responses:
+        '200':
+          description: Programa actualizado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseActualizarPrograma'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+
+    delete:
+      tags: [gesprog]
+      summary: Borrar programa
+      description: Elimina un programa de `aralmac`.
+      operationId: borrarPrograma
+      parameters:
+        - name: id_programa
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^p-\d{4}$'
+      responses:
+        '200':
+          description: Programa borrado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseBorrarPrograma'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+
+  # =========================================================
+  # ejecutor - Ejecutor de Procesos
+  # =========================================================
+
+  /ejecutor/procesos:
+    post:
+      tags: [ejecutor]
+      summary: Ejecutar proceso de lotes
+      description: |
+        Ejecuta un proceso de lotes a partir de un programa registrado y ficheros
+        de entrada/salida. Retorna un identificador único `proc-XXXX` y el estado inicial.
+      operationId: ejecutarProceso
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestEjecutarProceso'
+            examples:
+              ejemplo:
+                value:
+                  request_id: "550e8400-e29b-41d4-a716-446655440002"
+                  operation: "ejecutar_proceso"
+                  service: "ejecutor"
+                  params:
+                    id_programa: "p-0001"
+                    id_fichero_entrada: "f-0001"
+                    id_fichero_salida: "f-0002"
+                  timestamp: "2026-05-05T10:30:00Z"
+      responses:
+        '200':
+          description: Proceso lanzado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseEjecutarProceso'
+              examples:
+                exitoso:
+                  value:
+                    request_id: "550e8400-e29b-41d4-a716-446655440002"
+                    status: "success"
+                    data:
+                      id_proceso: "proc-0001"
+                      estado: "ejecutando"
+                    error: null
+                    timestamp: "2026-05-05T10:30:01Z"
+        '400':
+          description: Petición inválida (programa o fichero no encontrado)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseError'
+
+    get:
+      tags: [ejecutor]
+      summary: Listar procesos
+      description: Retorna el estado de todos los procesos de lotes registrados.
+      operationId: listarProcesos
+      responses:
+        '200':
+          description: Lista de procesos obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseListarProcesos'
+
+  /ejecutor/procesos/{id_proceso}:
+    get:
+      tags: [ejecutor]
+      summary: Estado de un proceso
+      description: Consulta el estado actual de un proceso específico.
+      operationId: estadoProceso
+      parameters:
+        - name: id_proceso
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^proc-\d{4}$'
+            example: 'proc-0001'
+      responses:
+        '200':
+          description: Estado del proceso obtenido exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseEstadoProceso'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+
+    delete:
+      tags: [ejecutor]
+      summary: Matar proceso
+      description: Termina forzadamente un proceso de lotes en ejecución.
+      operationId: matarProceso
+      parameters:
+        - name: id_proceso
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^proc-\d{4}$'
+      responses:
+        '200':
+          description: Proceso terminado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseMatarProceso'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+
+  # =========================================================
+  # Operaciones de Control (suspender, reasumir, terminar)
+  # =========================================================
+
+  /control/{servicio}/suspender:
+    post:
+      tags: [control]
+      summary: Suspender servicio
+      description: |
+        Suspende un servicio (`gesfich`, `gesprog` o `ejecutor`).
+        El servicio pasa al estado `Suspendido` y deja de procesar peticiones nuevas.
+      operationId: suspenderServicio
+      parameters:
+        - name: servicio
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [gesfich, gesprog, ejecutor]
+      responses:
+        '200':
+          description: Servicio suspendido exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseControl'
+
+  /control/{servicio}/reasumir:
+    post:
+      tags: [control]
+      summary: Reasumir servicio
+      description: |
+        Reanuda un servicio suspendido. Pasa al estado `Corriendo` y vuelve a procesar peticiones.
+      operationId: reasumirServicio
+      parameters:
+        - name: servicio
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [gesfich, gesprog, ejecutor]
+      responses:
+        '200':
+          description: Servicio reanudado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseControl'
+
+  /control/{servicio}/terminar:
+    post:
+      tags: [control]
+      summary: Terminar servicio
+      description: |
+        Termina la ejecución del servicio. El servicio pasa al estado `Terminado`.
+      operationId: terminarServicio
+      parameters:
+        - name: servicio
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [gesfich, gesprog, ejecutor]
+      responses:
+        '200':
+          description: Servicio terminado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseControl'
+
+  /control/ejecutor/parar:
+    post:
+      tags: [control]
+      summary: Parar ejecutor
+      description: |
+        Detiene la aceptación de nuevos procesos en el `ejecutor`.
+        Espera a que los procesos actuales terminen para pasar al estado `Terminado`.
+      operationId: pararEjecutor
+      responses:
+        '200':
+          description: Ejecutor detenido exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseControl'
+
+# =========================================================
+# Components - Esquemas reutilizables
+# =========================================================
+components:
+
+  schemas:
+
+    # ---- Esquemas Base ----
+
+    BaseRequest:
+      type: object
+      required: [request_id, operation, service, params]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: Identificador único de la petición (UUID v4)
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        operation:
+          type: string
+          description: Nombre de la operación a ejecutar
+        service:
+          type: string
+          enum: [gesfich, gesprog, ejecutor, ctrllt]
+          description: Servicio destino de la petición
+        params:
+          type: object
+          description: Parámetros específicos de la operación
+        timestamp:
+          type: string
+          format: date-time
+          description: Marca de tiempo de la petición (ISO 8601)
+          example: "2026-05-05T10:30:00Z"
+
+    BaseResponse:
+      type: object
+      required: [request_id, status]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: Mismo ID de la petición original
+        status:
+          type: string
+          enum: [success, error]
+          description: Estado de la respuesta
+        data:
+          type: object
+          nullable: true
+          description: Datos de la respuesta (null si hay error)
+        error:
+          $ref: '#/components/schemas/ErrorObject'
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-05-05T10:30:01Z"
+
+    ErrorObject:
+      type: object
+      nullable: true
+      properties:
+        code:
+          type: string
+          enum:
+            - INVALID_REQUEST
+            - INVALID_PARAMS
+            - FILE_NOT_FOUND
+            - PROGRAM_NOT_FOUND
+            - PROCESS_NOT_FOUND
+            - INVALID_STATE
+            - EXECUTABLE_INVALID
+            - STORAGE_ERROR
+            - PIPE_ERROR
+            - INTERNAL_ERROR
+            - SERVICE_UNAVAILABLE
+        message:
+          type: string
+          description: Mensaje descriptivo del error
+        detalles:
+          type: object
+          description: Información adicional sobre el error
+
+    # ---- gesfich - Esquemas ----
+
+    RequestCrearFichero:
+      allOf:
+        - $ref: '#/components/schemas/BaseRequest'
+        - type: object
+          properties:
+            operation:
+              type: string
+              enum: [crear_fichero]
+            service:
+              type: string
+              enum: [gesfich]
+            params:
+              type: object
+
+    ResponseCrearFichero:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_fichero:
+                  type: string
+                  pattern: '^f-\d{4}$'
+                  example: 'f-0001'
+
+    RequestListarFicheros:
+      allOf:
+        - $ref: '#/components/schemas/BaseRequest'
+        - type: object
+          properties:
+            operation:
+              type: string
+              enum: [listar_ficheros]
+
+    ResponseListarFicheros:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                ficheros:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id_fichero:
+                        type: string
+                        pattern: '^f-\d{4}$'
+                      tamaño_bytes:
+                        type: integer
+
+    ResponseLeerFichero:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_fichero:
+                  type: string
+                contenido:
+                  type: string
+                tamaño_bytes:
+                  type: integer
+
+    RequestActualizarFichero:
+      allOf:
+        - $ref: '#/components/schemas/BaseRequest'
+        - type: object
+          properties:
+            params:
+              type: object
+              required: [id_fichero, ruta_origen]
+              properties:
+                id_fichero:
+                  type: string
+                  pattern: '^f-\d{4}$'
+                ruta_origen:
+                  type: string
+                  example: '/home/usuario/datos.txt'
+
+    ResponseActualizarFichero:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_fichero:
+                  type: string
+                actualizado:
+                  type: boolean
+
+    ResponseBorrarFichero:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_fichero:
+                  type: string
+                borrado:
+                  type: boolean
+
+    # ---- gesprog - Esquemas ----
+
+    RequestGuardarPrograma:
+      allOf:
+        - $ref: '#/components/schemas/BaseRequest'
+        - type: object
+          properties:
+            params:
+              type: object
+              required: [ejecutable]
+              properties:
+                ejecutable:
+                  type: string
+                  description: Ruta al binario o script ejecutable
+                  example: '/usr/bin/wc'
+                argumentos:
+                  type: array
+                  items:
+                    type: string
+                  example: ['-l']
+                ambiente:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Variables de entorno como pares clave-valor
+                  example:
+                    PATH: '/usr/bin:/bin'
+
+    ResponseGuardarPrograma:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_programa:
+                  type: string
+                  pattern: '^p-\d{4}$'
+                  example: 'p-0001'
+
+    ResponseListarProgramas:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                programas:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id_programa:
+                        type: string
+                      ejecutable:
+                        type: string
+
+    ResponseLeerPrograma:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_programa:
+                  type: string
+                ejecutable:
+                  type: string
+                argumentos:
+                  type: array
+                  items:
+                    type: string
+                ambiente:
+                  type: object
+                  additionalProperties:
+                    type: string
+
+    RequestActualizarPrograma:
+      allOf:
+        - $ref: '#/components/schemas/BaseRequest'
+        - type: object
+          properties:
+            params:
+              type: object
+              required: [id_programa]
+              properties:
+                id_programa:
+                  type: string
+                  pattern: '^p-\d{4}$'
+                ejecutable:
+                  type: string
+                argumentos:
+                  type: array
+                  items:
+                    type: string
+                ambiente:
+                  type: object
+                  additionalProperties:
+                    type: string
+
+    ResponseActualizarPrograma:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_programa:
+                  type: string
+                actualizado:
+                  type: boolean
+
+    ResponseBorrarPrograma:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_programa:
+                  type: string
+                borrado:
+                  type: boolean
+
+    # ---- ejecutor - Esquemas ----
+
+    RequestEjecutarProceso:
+      allOf:
+        - $ref: '#/components/schemas/BaseRequest'
+        - type: object
+          properties:
+            params:
+              type: object
+              required: [id_programa]
+              properties:
+                id_programa:
+                  type: string
+                  pattern: '^p-\d{4}$'
+                  example: 'p-0001'
+                id_fichero_entrada:
+                  type: string
+                  pattern: '^f-\d{4}$'
+                  example: 'f-0001'
+                id_fichero_salida:
+                  type: string
+                  pattern: '^f-\d{4}$'
+                  example: 'f-0002'
+
+    ResponseEjecutarProceso:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_proceso:
+                  type: string
+                  pattern: '^proc-\d{4}$'
+                  example: 'proc-0001'
+                estado:
+                  type: string
+                  enum: [ejecutando, suspendido, terminado, error]
+
+    ResponseEstadoProceso:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_proceso:
+                  type: string
+                estado:
+                  type: string
+                  enum: [ejecutando, suspendido, terminado, error]
+                id_programa:
+                  type: string
+                tiempo_inicio:
+                  type: string
+                  format: date-time
+                tiempo_fin:
+                  type: string
+                  format: date-time
+                  nullable: true
+
+    ResponseListarProcesos:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                procesos:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id_proceso:
+                        type: string
+                      estado:
+                        type: string
+                        enum: [ejecutando, suspendido, terminado, error]
+
+    ResponseMatarProceso:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id_proceso:
+                  type: string
+                estado:
+                  type: string
+                  enum: [terminado]
+
+    # ---- Control de Servicios ----
+
+    ResponseControl:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                servicio:
+                  type: string
+                  enum: [gesfich, gesprog, ejecutor]
+                estado:
+                  type: string
+                  enum: [Corriendo, Suspendido, Terminado, Parar]
+
+    # ---- Errores ----
+
+    ResponseError:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [error]
+            data:
+              nullable: true
+              example: null
+            error:
+              $ref: '#/components/schemas/ErrorObject'
+
+  responses:
+
+    ErrorResponse:
+      description: Error interno del servidor
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ResponseError'
+
+    NotFoundResponse:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ResponseError'
+          examples:
+            no_encontrado:
+              value:
+                request_id: "uuid-v4"
+                status: "error"
+                data: null
+                error:
+                  code: "FILE_NOT_FOUND"
+                  message: "El recurso solicitado no existe"
+                timestamp: "2026-05-05T10:30:01Z"
