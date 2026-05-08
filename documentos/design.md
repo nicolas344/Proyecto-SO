@@ -56,7 +56,7 @@ El sistema simula la ejecución de procesos por lotes en un mainframe. El flujo 
 5. El `ejecutor` toma los programas y ficheros del área de almacenamiento (`aralmac`) para crear los procesos.
 6. El cliente puede consultar el estado o terminar los procesos en ejecución.
 
-El sistema soporta **múltiples clientes ejecutándose simultáneamente** conectándose al servidor.
+El sistema opera con **un único cliente** conectado al servidor.
 
 ---
 
@@ -65,39 +65,35 @@ El sistema soporta **múltiples clientes ejecutándose simultáneamente** conect
 ### 4.1 Diagrama General
 
 ```
-                              ┌──────────────────┐
-                              │    aralmac       │
-                              │  (Almacenamiento)│
-                              └────────┬─────────┘
-                                       │
-              ┌────────────────────────┼────────────────────────┐
-              │                        │                        │
-              ▼                        ▼                        ▼
-        ┌──────────┐             ┌──────────┐             ┌──────────┐
-        │ gesfich  │             │ gesprog  │             │ ejecutor │
-        │(Ficheros)│             │(Programas)│            │(Procesos)│
-        └─────┬────┘             └─────┬────┘             └────┬─────┘
-              │                        │                        │
-              │  Tuberías Nombradas    │  Tuberías Nombradas    │
-              │     (JSON)             │     (JSON)             │
-              └────────────┬───────────┴────────────────────────┘
-                           │
-                           ▼
-                     ┌──────────┐
-                     │  ctrllt  │
-                     │ (Control)│
-                     │ Pasarela │
-                     └─────┬────┘
-                           │
-                           │ Tuberías Nombradas (JSON)
-                           │
-                ┌──────────┴──────────┐
-                │                     │
-                ▼                     ▼
-          ┌──────────┐          ┌──────────┐
-          │ cliente  │   ...    │ cliente  │
-          │    1     │          │    N     │
-          └──────────┘          └──────────┘
+                    ┌─────────────────────────────────────┐
+                    │             aralmac                 │
+                    │         (Almacenamiento)            │
+                    └──────┬──────────────┬──────┬───────┘
+                           │              │      │
+                    acceso │       acceso │      │ acceso
+                    directo│       directo│      │ directo
+                           │              │      │
+                    ┌──────▼──┐    ┌──────▼──┐  ┌▼─────────┐
+                    │ gesfich │    │ gesprog │  │ ejecutor │
+                    │(Ficheros)│   │(Programas)│ │(Procesos)│
+                    └──────┬──┘    └──────┬──┘  └────┬─────┘
+                           │              │           │
+                           │   Tuberías Nombradas (JSON)
+                           └──────────────┬───────────┘
+                                          │
+                                          ▼
+                                    ┌──────────┐
+                                    │  ctrllt  │
+                                    │ (Control)│
+                                    │ Pasarela │
+                                    └─────┬────┘
+                                          │
+                                   Tubería Nombrada (JSON)
+                                          │
+                                          ▼
+                                    ┌──────────┐
+                                    │ cliente  │
+                                    └──────────┘
 ```
 
 ### 4.2 Patrón Arquitectónico
@@ -106,7 +102,8 @@ El sistema sigue el patrón de **microservicios**, donde:
 
 - **`ctrllt`** actúa como **API Gateway / Pasarela**, recibiendo todas las peticiones del cliente y enrutándolas al servicio apropiado.
 - Cada servicio (**`gesfich`**, **`gesprog`**, **`ejecutor`**) es independiente, con su propia responsabilidad y máquina de estados.
-- Los servicios comparten una región común de almacenamiento llamada **`aralmac`**.
+- Los servicios **`gesfich`**, **`gesprog`** y **`ejecutor`** acceden **directamente** a `aralmac` para leer y escribir datos. El `ejecutor` en particular no consulta a `gesfich` ni a `gesprog` a través de sus tuberías, sino que va directo al almacén.
+- `ctrllt` **no accede** a `aralmac`.
 
 ---
 
@@ -248,10 +245,12 @@ cliente  ─petición─►  ctrllt  ─petición─►  servicio (gesfich/gespr
 cliente  ◄─respuesta─  ctrllt  ◄─respuesta─                 ┘
 ```
 
-### 6.3 Concurrencia
+### 6.3 Concurrencia y Modelo de Cliente
 
-- El sistema soporta **múltiples clientes simultáneos**.
-- `ctrllt` gestiona la concurrencia, asignando identificadores de petición únicos para distinguir las respuestas.
+- El sistema opera con **un único cliente** conectado a `ctrllt`.
+- La concurrencia relevante ocurre dentro de **`ctrllt`**, que debe manejar mensajes entrantes del cliente y respuestas de múltiples servicios usando **hilos (threads)**.
+- Las escrituras en las tuberías son **atómicas** a nivel del sistema operativo, por lo que los mensajes no se mezclan entre sí.
+- El `request_id` de cada mensaje permite correlacionar peticiones con sus respuestas en todo momento.
 
 ---
 
@@ -467,6 +466,8 @@ Copia el contenido de un fichero del sistema dentro de `aralmac`.
 
 Elimina un fichero de `aralmac`.
 
+> **Importante:** Si el fichero está siendo utilizado por un proceso de lotes activo, la operación retorna el error `FILE_IN_USE` y el fichero **no se borra**. Se asume que el cliente es responsable de no intentar borrar ficheros que estén en uso.
+
 **Operación:** `borrar_fichero`
 
 **Petición:**
@@ -489,6 +490,19 @@ Elimina un fichero de `aralmac`.
   "data": {
     "id_fichero": "f-0001",
     "borrado": true
+  }
+}
+```
+
+**Respuesta de error (fichero en uso):**
+```json
+{
+  "request_id": "uuid-v4",
+  "status": "error",
+  "data": null,
+  "error": {
+    "code": "FILE_IN_USE",
+    "message": "El fichero 'f-0001' está siendo utilizado por el proceso proc-0001"
   }
 }
 ```
@@ -700,7 +714,13 @@ Elimina un programa de `aralmac`.
 
 #### 8.3.1 Ejecutar Proceso de Lotes
 
-Ejecuta un proceso de lotes a partir de un programa y ficheros registrados.
+Ejecuta un proceso de lotes siguiendo el formato de cadena:
+
+**`fichero_entrada → programa_1 → programa_2 → ... → fichero_salida`**
+
+El fichero de entrada y el fichero de salida son **obligatorios**. La lista de programas define la cadena de procesos que se ejecutarán secuencialmente, donde la salida de uno es la entrada del siguiente.
+
+La operación es **no bloqueante**: el ejecutor valida la petición, crea el proceso de lotes, y devuelve inmediatamente el identificador. Internamente lanza un hilo que espera a que el lote termine, momento en el que envía una notificación al cliente.
 
 **Operación:** `ejecutar_proceso`
 
@@ -711,14 +731,20 @@ Ejecuta un proceso de lotes a partir de un programa y ficheros registrados.
   "operation": "ejecutar_proceso",
   "service": "ejecutor",
   "params": {
-    "id_programa": "p-0001",
     "id_fichero_entrada": "f-0001",
+    "programas": ["p-0001", "p-0002"],
     "id_fichero_salida": "f-0002"
   }
 }
 ```
 
-**Respuesta exitosa:**
+| Campo | Obligatorio | Descripción |
+|-------|-------------|-------------|
+| `id_fichero_entrada` | ✅ Sí | Fichero fuente de datos de entrada |
+| `programas` | ✅ Sí | Array ordenado de IDs de programas a ejecutar en cadena |
+| `id_fichero_salida` | ✅ Sí | Fichero donde se escribe el resultado final |
+
+**Respuesta inmediata** (al recibir la petición válida):
 ```json
 {
   "request_id": "uuid-v4",
@@ -729,6 +755,21 @@ Ejecuta un proceso de lotes a partir de un programa y ficheros registrados.
   }
 }
 ```
+
+**Notificación de fin** (enviada cuando el lote termina):
+```json
+{
+  "request_id": "uuid-v4",
+  "status": "success",
+  "data": {
+    "id_proceso": "proc-0001",
+    "estado": "terminado",
+    "razon_fin": "completado"
+  }
+}
+```
+
+> **Nota:** Si la petición es inválida (algún ID no existe), el ejecutor responde con error inmediatamente y no crea el proceso.
 
 ---
 
@@ -764,7 +805,7 @@ Consulta el estado actual de un proceso específico.
 }
 ```
 
-**Estados posibles:** `ejecutando`, `suspendido`, `terminado`, `error`.
+**Estados posibles:** `ejecutando`, `terminado`, `cancelado`, `error`.
 
 ---
 
@@ -802,7 +843,7 @@ Retorna el estado de todos los procesos de lotes.
 
 #### 8.3.4 Matar Proceso
 
-Termina forzadamente un proceso de lotes en ejecución.
+Termina forzadamente un proceso de lotes en ejecución. El proceso queda marcado como **cancelado por agente externo**.
 
 **Operación:** `matar_proceso`
 
@@ -825,7 +866,8 @@ Termina forzadamente un proceso de lotes en ejecución.
   "status": "success",
   "data": {
     "id_proceso": "proc-0001",
-    "estado": "terminado"
+    "estado": "cancelado",
+    "razon_fin": "agente_externo"
   }
 }
 ```
@@ -848,7 +890,7 @@ Termina forzadamente un proceso de lotes en ejecución.
 
 ```
    ┌────────┐    iniciar    ┌──────────┐    terminar    ┌────────────┐
-   │ inicio │ ─────────────►│ Corriendo│ ──────────────►│ Terminado  │
+   │ inicio │ ─────────────►│ Corriendo│ ──────────────►│ Terminando │──► Terminado
    └────────┘               └──────────┘                └────────────┘
 ```
 
@@ -856,7 +898,14 @@ Termina forzadamente un proceso de lotes en ejecución.
 |--------|-------------|
 | `inicio` | Estado inicial antes de aceptar peticiones |
 | `Corriendo` | Aceptando y procesando peticiones |
-| `Terminado` | Servicio finalizado |
+| `Terminando` | Enviando señal de `terminar` a gesfich, gesprog y ejecutor, esperando que finalicen |
+| `Terminado` | Todos los servicios dependientes han terminado. ctrllt se apaga |
+
+**Comportamiento al terminar:**
+Al recibir la operación `terminar`, `ctrllt` sigue este orden antes de apagarse:
+1. Envía `terminar` a `gesfich`, `gesprog` y `ejecutor`
+2. Espera a que cada uno confirme que terminó
+3. Una vez que todos han finalizado, `ctrllt` termina su propia ejecución
 
 ---
 
@@ -914,9 +963,13 @@ Termina forzadamente un proceso de lotes en ejecución.
 |--------|-------------|
 | `inicio` | Estado inicial |
 | `Ejecutar` | Aceptando y ejecutando procesos de lotes |
-| `Suspendidos` | Procesos pausados |
-| `Parar` | No acepta nuevos procesos, espera a que los actuales terminen |
+| `Suspendido` | No acepta nuevas peticiones. Los procesos de lotes **ya en ejecución continúan hasta terminar**. Las peticiones nuevas se rechazan con `SERVICE_UNAVAILABLE` |
+| `Parar` | No acepta nuevos procesos. Espera a que todos los procesos activos terminen (graceful shutdown) |
 | `Terminado` | Servicio finalizado |
+
+**Diferencia entre Parar y Terminar:**
+- **Parar:** Cierre ordenado. El ejecutor deja de aceptar nuevos lotes y espera a que los activos terminen naturalmente antes de apagarse.
+- **Terminar:** Apagado inmediato del servicio una vez que el estado `Parar` completó su ciclo (`/Procesos = 0`).
 
 ---
 
@@ -927,14 +980,16 @@ Termina forzadamente un proceso de lotes en ejecución.
 | `INVALID_REQUEST` | Estructura de petición inválida |
 | `INVALID_PARAMS` | Parámetros inválidos o faltantes |
 | `FILE_NOT_FOUND` | Fichero no encontrado en aralmac |
+| `FILE_IN_USE` | Fichero en uso por un proceso activo, no puede ser borrado |
 | `PROGRAM_NOT_FOUND` | Programa no encontrado en aralmac |
 | `PROCESS_NOT_FOUND` | Proceso no encontrado |
+| `PROCESS_CANCELLED` | Proceso terminado por agente externo (matar) |
 | `INVALID_STATE` | Operación no válida en el estado actual |
 | `EXECUTABLE_INVALID` | El ejecutable no es válido o no existe |
 | `STORAGE_ERROR` | Error en el área de almacenamiento |
 | `PIPE_ERROR` | Error de comunicación en la tubería |
 | `INTERNAL_ERROR` | Error interno del servicio |
-| `SERVICE_UNAVAILABLE` | Servicio no disponible (suspendido o terminado) |
+| `SERVICE_UNAVAILABLE` | Servicio suspendido o terminado, no acepta peticiones |
 
 **Ejemplo de respuesta con error:**
 ```json
@@ -1039,12 +1094,13 @@ cliente → ctrllt → gesprog
   "operation": "ejecutar_proceso",
   "service": "ejecutor",
   "params": {
-    "id_programa": "p-0001",
     "id_fichero_entrada": "f-0001",
+    "programas": ["p-0001"],
     "id_fichero_salida": "f-0002"
   }
 }
-// → respuesta con id_proceso "proc-0001"
+// → respuesta inmediata con id_proceso "proc-0001"
+// → notificación posterior cuando el lote termina
 ```
 
 **Paso 6:** Cliente consulta el estado.
@@ -1073,7 +1129,7 @@ cliente → ctrllt → gesprog
 
 ### 11.2 Flujo: Manejo de Error
 
-**Caso:** El cliente intenta ejecutar un programa con un fichero inexistente.
+**Caso:** El cliente intenta ejecutar un proceso con un fichero de entrada inexistente.
 
 ```json
 // Petición
@@ -1082,8 +1138,9 @@ cliente → ctrllt → gesprog
   "operation": "ejecutar_proceso",
   "service": "ejecutor",
   "params": {
-    "id_programa": "p-0001",
-    "id_fichero_entrada": "f-9999"
+    "id_fichero_entrada": "f-9999",
+    "programas": ["p-0001"],
+    "id_fichero_salida": "f-0002"
   }
 }
 
@@ -1139,5 +1196,3 @@ Se recomienda implementar logging para:
 - Cambios de estado del servicio.
 
 ---
-
-

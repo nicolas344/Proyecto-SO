@@ -14,12 +14,12 @@ info:
 
     ## Componentes del Sistema
 
-    - **cliente**: Realiza peticiones al sistema (CRUD de programas, ficheros y procesos).
-    - **ctrllt**: Pasarela que recibe peticiones y las dirige al servicio correspondiente.
-    - **gesfich**: Gestor de ficheros (CRUD de ficheros en `aralmac`).
-    - **gesprog**: Gestor de programas (CRUD de programas en `aralmac`).
-    - **ejecutor**: Ejecutor de procesos de lotes.
-    - **aralmac**: Área de almacenamiento compartida.
+    - **cliente**: Único cliente que realiza peticiones al sistema (CRUD de programas, ficheros y procesos).
+    - **ctrllt**: Pasarela que recibe peticiones del cliente y las dirige al servicio correspondiente. Solo hace enrutamiento.
+    - **gesfich**: Gestor de ficheros (CRUD de ficheros en `aralmac`). Accede directamente a `aralmac`.
+    - **gesprog**: Gestor de programas (CRUD de programas en `aralmac`). Accede directamente a `aralmac`.
+    - **ejecutor**: Ejecutor de procesos de lotes. Accede **directamente** a `aralmac`, sin consultar a `gesfich` ni `gesprog` por tuberías.
+    - **aralmac**: Área de almacenamiento compartida. Los datos persisten entre ejecuciones.
 
     ## Identificadores
 
@@ -192,7 +192,10 @@ paths:
     delete:
       tags: [gesfich]
       summary: Borrar fichero
-      description: Elimina un fichero del área de almacenamiento `aralmac`.
+      description: |
+        Elimina un fichero del área de almacenamiento `aralmac`.
+        Si el fichero está siendo utilizado por un proceso de lotes activo,
+        retorna error `FILE_IN_USE` y el fichero no se borra.
       operationId: borrarFichero
       parameters:
         - name: id_fichero
@@ -210,6 +213,22 @@ paths:
                 $ref: '#/components/schemas/ResponseBorrarFichero'
         '404':
           $ref: '#/components/responses/NotFoundResponse'
+        '409':
+          description: Fichero en uso por un proceso activo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseError'
+              examples:
+                en_uso:
+                  value:
+                    request_id: "uuid-v4"
+                    status: "error"
+                    data: null
+                    error:
+                      code: "FILE_IN_USE"
+                      message: "El fichero 'f-0001' está siendo utilizado por el proceso proc-0001"
+                    timestamp: "2026-05-05T10:30:01Z"
 
   # =========================================================
   # gesprog - Gestor de Programas
@@ -361,8 +380,17 @@ paths:
       tags: [ejecutor]
       summary: Ejecutar proceso de lotes
       description: |
-        Ejecuta un proceso de lotes a partir de un programa registrado y ficheros
-        de entrada/salida. Retorna un identificador único `proc-XXXX` y el estado inicial.
+        Ejecuta un proceso de lotes siguiendo el formato de cadena:
+
+        **`fichero_entrada → programa_1 → programa_2 → ... → fichero_salida`**
+
+        El fichero de entrada y el fichero de salida son **obligatorios**.
+        La operación es **no bloqueante**: verifica que existan todos los IDs,
+        crea el proceso de lotes, devuelve inmediatamente el identificador y
+        el proceso corre en background. Cuando el lote termina, el ejecutor
+        envía una notificación al cliente con el resultado final.
+
+        El ejecutor puede correr **múltiples procesos simultáneamente**.
       operationId: ejecutarProceso
       requestBody:
         required: true
@@ -377,13 +405,13 @@ paths:
                   operation: "ejecutar_proceso"
                   service: "ejecutor"
                   params:
-                    id_programa: "p-0001"
                     id_fichero_entrada: "f-0001"
+                    programas: ["p-0001", "p-0002"]
                     id_fichero_salida: "f-0002"
                   timestamp: "2026-05-05T10:30:00Z"
       responses:
         '200':
-          description: Proceso lanzado exitosamente
+          description: Proceso lanzado exitosamente (respuesta inmediata)
           content:
             application/json:
               schema:
@@ -398,8 +426,19 @@ paths:
                       estado: "ejecutando"
                     error: null
                     timestamp: "2026-05-05T10:30:01Z"
+                notificacion_fin:
+                  summary: Notificación cuando el lote termina
+                  value:
+                    request_id: "550e8400-e29b-41d4-a716-446655440002"
+                    status: "success"
+                    data:
+                      id_proceso: "proc-0001"
+                      estado: "terminado"
+                      razon_fin: "completado"
+                    error: null
+                    timestamp: "2026-05-05T10:31:00Z"
         '400':
-          description: Petición inválida (programa o fichero no encontrado)
+          description: Petición inválida (algún ID no existe en aralmac)
           content:
             application/json:
               schema:
@@ -445,7 +484,9 @@ paths:
     delete:
       tags: [ejecutor]
       summary: Matar proceso
-      description: Termina forzadamente un proceso de lotes en ejecución.
+      description: |
+        Termina forzadamente un proceso de lotes en ejecución.
+        El proceso queda marcado como `cancelado` con `razon_fin: agente_externo`.
       operationId: matarProceso
       parameters:
         - name: id_proceso
@@ -474,7 +515,11 @@ paths:
       summary: Suspender servicio
       description: |
         Suspende un servicio (`gesfich`, `gesprog` o `ejecutor`).
-        El servicio pasa al estado `Suspendido` y deja de procesar peticiones nuevas.
+        El servicio pasa al estado `Suspendido` y rechaza nuevas peticiones con `SERVICE_UNAVAILABLE`.
+
+        **Caso especial — ejecutor:** Al suspenderse, los procesos de lotes que ya
+        están en ejecución **continúan corriendo hasta terminar**. Solo se rechazan
+        las nuevas peticiones de ejecución.
       operationId: suspenderServicio
       parameters:
         - name: servicio
@@ -519,6 +564,10 @@ paths:
       summary: Terminar servicio
       description: |
         Termina la ejecución del servicio. El servicio pasa al estado `Terminado`.
+
+        **Caso especial — ctrllt:** Al recibir `terminar`, `ctrllt` primero envía
+        la señal de terminar a `gesfich`, `gesprog` y `ejecutor` según su máquina
+        de estados, espera a que todos finalicen, y luego se apaga él mismo.
       operationId: terminarServicio
       parameters:
         - name: servicio
@@ -618,8 +667,10 @@ components:
             - INVALID_REQUEST
             - INVALID_PARAMS
             - FILE_NOT_FOUND
+            - FILE_IN_USE
             - PROGRAM_NOT_FOUND
             - PROCESS_NOT_FOUND
+            - PROCESS_CANCELLED
             - INVALID_STATE
             - EXECUTABLE_INVALID
             - STORAGE_ERROR
@@ -885,20 +936,26 @@ components:
           properties:
             params:
               type: object
-              required: [id_programa]
+              required: [id_fichero_entrada, programas, id_fichero_salida]
               properties:
-                id_programa:
-                  type: string
-                  pattern: '^p-\d{4}$'
-                  example: 'p-0001'
                 id_fichero_entrada:
                   type: string
                   pattern: '^f-\d{4}$'
                   example: 'f-0001'
+                  description: Fichero fuente de datos de entrada (obligatorio)
+                programas:
+                  type: array
+                  description: Array ordenado de IDs de programas a ejecutar en cadena (obligatorio)
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^p-\d{4}$'
+                  example: ['p-0001', 'p-0002']
                 id_fichero_salida:
                   type: string
                   pattern: '^f-\d{4}$'
                   example: 'f-0002'
+                  description: Fichero donde se escribe el resultado final (obligatorio)
 
     ResponseEjecutarProceso:
       allOf:
@@ -914,7 +971,12 @@ components:
                   example: 'proc-0001'
                 estado:
                   type: string
-                  enum: [ejecutando, suspendido, terminado, error]
+                  enum: [ejecutando, terminado, cancelado, error]
+                razon_fin:
+                  type: string
+                  enum: [completado, agente_externo]
+                  nullable: true
+                  description: Presente solo en la notificación de fin de lote
 
     ResponseEstadoProceso:
       allOf:
@@ -928,9 +990,20 @@ components:
                   type: string
                 estado:
                   type: string
-                  enum: [ejecutando, suspendido, terminado, error]
-                id_programa:
+                  enum: [ejecutando, terminado, cancelado, error]
+                programas:
+                  type: array
+                  items:
+                    type: string
+                  description: Lista de IDs de programas que conforman el lote
+                id_fichero_entrada:
                   type: string
+                id_fichero_salida:
+                  type: string
+                razon_fin:
+                  type: string
+                  enum: [completado, agente_externo]
+                  nullable: true
                 tiempo_inicio:
                   type: string
                   format: date-time
@@ -956,7 +1029,7 @@ components:
                         type: string
                       estado:
                         type: string
-                        enum: [ejecutando, suspendido, terminado, error]
+                        enum: [ejecutando, terminado, cancelado, error]
 
     ResponseMatarProceso:
       allOf:
@@ -970,7 +1043,10 @@ components:
                   type: string
                 estado:
                   type: string
-                  enum: [terminado]
+                  enum: [cancelado]
+                razon_fin:
+                  type: string
+                  enum: [agente_externo]
 
     # ---- Control de Servicios ----
 

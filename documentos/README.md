@@ -57,7 +57,6 @@ Si usas VS Code:
 
 ---
 
-
 ## Cómo leer la documentación
 
 ### 1. Empezar por `Diseño.md`
